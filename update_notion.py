@@ -80,6 +80,8 @@ def npatch(path, body):
 def npost(path, body):
     r = requests.post(f"https://api.notion.com/v1/{path}",
                       headers=HEADERS, data=json.dumps(body, ensure_ascii=False))
+    if not r.ok:
+        print(f"  ❌ Notion API 오류 ({r.status_code}): {r.text[:300]}")
     r.raise_for_status()
     return r.json()
 
@@ -868,20 +870,22 @@ def upsert_hold_tracker(page_id, tables, holdings):
     sec = tables.get("보유기간 트래커", {})
     header = ["종목명","티커","분류","최초매수일","보유일수","매입가","현재가","수익률"]
     if not sec.get("heading_id"):
-        # 헤더/테이블 제외한 블록 먼저 추가
-        append_blocks(page_id, [
-            divider_block(), h2_block("⏱ 보유기간 트래커"),
-            para_block("종목별 최초 매수일 기준 보유일수 (매일 자동 갱신)", color="gray"),
-        ])
-        time.sleep(0.3)
-        # 테이블 생성 (행 별도 추가)
+        # 블록 하나씩 개별 추가 (일괄 추가 시 400 오류 방지)
+        for blk in [divider_block(), h2_block("⏱ 보유기간 트래커"),
+                    para_block("종목별 최초 매수일 기준 보유일수 (매일 자동 갱신)", color="gray")]:
+            npost(f"blocks/{page_id}/children", {"children": [blk]})
+            time.sleep(0.2)
+        # 날짜 형식 통일 (YYYYMMDD → YYYY-MM-DD)
+        def fmt_date(d):
+            d = str(d)
+            return f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else d
         data_rows = [trow([
-            h["name"], h["ticker"], h["category"],
-            h["first_buy_date"],
-            f"{h['hold_days']}일",
-            f"{h['avg_price']:,.0f}원",
-            f"{h.get('current_price', h['avg_price']):,.0f}원",
-            f"{'📈' if h['profit_rate']>=0 else '📉'} {h['profit_rate']:+.2f}%",
+            str(h["name"]), str(h["ticker"]), str(h["category"]),
+            fmt_date(h["first_buy_date"]),
+            f"{int(h['hold_days'])}일",
+            f"{float(h['avg_price']):,.0f}원",
+            f"{float(h.get('current_price', h['avg_price'])):,.0f}원",
+            f"{'📈' if float(h['profit_rate'])>=0 else '📉'} {float(h['profit_rate']):+.2f}%",
         ]) for h in holdings]
         create_table_with_rows(page_id, 8, True, header, data_rows)
         print("  ✅ '보유기간 트래커' 신규 생성")
@@ -910,21 +914,23 @@ def upsert_index_section(page_id, tables, all_blocks,
         j_rows = [trow([j["name"],j["ticker"],j["index"],
                         str(j["종목누적(%)"]),str(j["지수누적(%)"]),
                         str(j["차이(%)"]),j["판정"]]) for j in judgements]
-        # 테이블 제외 블록 먼저 추가
-        append_blocks(page_id, [
-            divider_block(), h2_block("📈 지수기반 종목분석"),
-            h3_block("📋 지수 분석 대상 및 판정"),
-        ])
-        time.sleep(0.3)
-        # 테이블 생성 (행 별도 추가)
+        # 블록 하나씩 개별 추가
+        for blk in [divider_block(), h2_block("📈 지수기반 종목분석"),
+                    h3_block("📋 지수 분석 대상 및 판정")]:
+            npost(f"blocks/{page_id}/children", {"children": [blk]})
+            time.sleep(0.2)
         create_table_with_rows(page_id, 7, True, j_header, j_rows)
         time.sleep(0.3)
-        # 나머지 블록 추가
-        append_blocks(page_id, [
+        for blk in [
             para_block("※ 6개월 누적 수익률이 기준지수 대비 -10%p 이하 → 손절 검토", color="gray"),
             h3_block("📉 기준지수 대비 월별 수익률 비교 차트"),
             image_block(chart_url),
-        ], ignore_errors=True)
+        ]:
+            try:
+                npost(f"blocks/{page_id}/children", {"children": [blk]})
+                time.sleep(0.2)
+            except Exception as e:
+                print(f"  ⚠ 블록 추가 실패 (무시): {e}")
         print("  ✅ '지수기반 종목분석' 섹션 신규 생성")
         return
 
@@ -1081,4 +1087,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
