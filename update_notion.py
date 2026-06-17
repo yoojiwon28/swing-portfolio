@@ -1,4 +1,3 @@
-
 """
 SWING Portfolio - GitHub Actions 자동 업데이트 스크립트 v4
 노션 구조에 맞게 각 섹션에 직접 이미지/테이블 삽입
@@ -192,46 +191,37 @@ def append_one(parent_id, blk, label=""):
                      {"children":[blk]}, label)
  
 def update_image_block(img_block_id, img_url, label="이미지"):
-    """이미지 블록 ID로 직접 URL 교체"""
-    try:
-        npatch(f"blocks/{img_block_id}",
-               {"image":{"type":"external","external":{"url":img_url}}})
-        print(f"  ✅ {label} 이미지 업데이트")
-    except Exception as e:
-        print(f"  ⚠ {label} 이미지 업데이트 실패: {e}")
+    """이미지 블록 ID로 직접 URL 교체 - external/file 두 형식 모두 시도"""
+    # 형식 1: external (Embed link로 만든 경우)
+    for body in [
+        {"image": {"external": {"url": img_url}}},
+        {"image": {"type": "external", "external": {"url": img_url}}},
+    ]:
+        try:
+            npatch(f"blocks/{img_block_id}", body)
+            print(f"  ✅ {label} 이미지 업데이트")
+            return
+        except Exception:
+            pass
+    print(f"  ⚠ {label} 이미지 업데이트 실패 — 노션에서 이미지 블록 타입 확인 필요")
  
-def upsert_table(parent_id, col_count, has_header,
-                  header_cells, data_rows, label="테이블"):
-    """
-    parent_id 아래 첫 번째 테이블을 찾아 업데이트.
-    없으면 parent_id 자식으로 새로 생성.
-    parent_id: heading_2 블록 ID 또는 페이지 ID
-    """
-    children = get_children(parent_id)
-    table_id = None
-    for b in children:
-        if b["type"] == "table":
-            table_id = b["id"].replace("-","")
-            break
+def find_table_after_heading(h2_block_id):
+    """페이지 블록에서 heading_2 다음에 오는 테이블 블록 ID 반환. 없으면 None."""
+    all_blocks = get_children(NOTION_PAGE_ID)
+    for i, b in enumerate(all_blocks):
+        if b["id"].replace("-","") == h2_block_id.replace("-",""):
+            # 바로 다음 블록들 중 테이블 찾기 (divider 전까지)
+            for j in range(i+1, min(i+5, len(all_blocks))):
+                nb = all_blocks[j]
+                if nb["type"] == "table":
+                    return nb["id"].replace("-","")
+                if nb["type"] in ("heading_2","heading_1","divider"):
+                    break
+    return None
  
-    if table_id:
-        existing = get_table_rows(table_id)[1:]
-        for i, row in enumerate(data_rows):
-            if isinstance(row, dict) and "table_row" in row:
-                cells = ["".join(t.get("plain_text","") for t in cell)
-                         for cell in row["table_row"]["cells"]]
-            else:
-                cells = row
-            if i < len(existing):
-                update_row(existing[i]["id"], cells)
-            else:
-                append_row(table_id, cells)
-            time.sleep(0.15)
-        print(f"  ✅ {label} 테이블 업데이트")
-        return table_id
- 
-    # 신규 생성
-    resp = safe_post(f"blocks/{parent_id}/children", {"children":[{
+def create_table_in_page(col_count, has_header, header_cells, data_rows, label):
+    """NOTION_PAGE_ID에 테이블 신규 생성 (맨 끝에 추가)"""
+    resp = safe_post(f"blocks/{NOTION_PAGE_ID}/children", {"children":[{
         "object":"block","type":"table",
         "table":{"table_width":col_count,
                  "has_column_header":has_header,
@@ -243,17 +233,37 @@ def upsert_table(parent_id, col_count, has_header,
     npost(f"blocks/{table_id}/children",{"children":[trow(header_cells)]})
     time.sleep(0.2)
     for i in range(0, len(data_rows), 50):
-        batch = data_rows[i:i+50]
-        rows_to_add = []
-        for row in batch:
-            if isinstance(row, dict) and "table_row" in row:
-                rows_to_add.append(row)
-            else:
-                rows_to_add.append(trow(row))
-        npost(f"blocks/{table_id}/children",{"children":rows_to_add})
+        batch = [trow(r) if not (isinstance(r,dict) and "table_row" in r) else r
+                 for r in data_rows[i:i+50]]
+        npost(f"blocks/{table_id}/children",{"children":batch})
         time.sleep(0.2)
     print(f"  ✅ {label} 테이블 신규 생성")
     return table_id
+ 
+def upsert_table(h2_block_id, col_count, has_header,
+                  header_cells, data_rows, label="테이블"):
+    """
+    heading_2 다음 테이블을 찾아 업데이트.
+    없으면 NOTION_PAGE_ID 맨 끝에 신규 생성.
+    (heading_2는 자식 블록 불가 → 형제 블록 탐색)
+    """
+    table_id = find_table_after_heading(h2_block_id)
+ 
+    if table_id:
+        existing = get_table_rows(table_id)[1:]
+        for i, row in enumerate(data_rows):
+            cells = row if isinstance(row, list) else                     ["".join(t.get("plain_text","") for t in cell)
+                     for cell in row["table_row"]["cells"]]
+            if i < len(existing):
+                update_row(existing[i]["id"], cells)
+            else:
+                append_row(table_id, cells)
+            time.sleep(0.15)
+        print(f"  ✅ {label} 테이블 업데이트")
+        return table_id
+ 
+    return create_table_in_page(col_count, has_header,
+                                 header_cells, data_rows, label)
  
 # ─────────────────────────────────────────────
 # DB 프로퍼티 헬퍼
@@ -969,13 +979,8 @@ def main():
         if idx_file:
             update_image_block(BLK["img_index"], raw_url(idx_file), "지수비교 차트")
  
-        # ── 수익 분석 섹션 안내 텍스트
-        children = get_children(BLK["h2_analysis"])
-        if not children:
-            safe_post(f"blocks/{BLK['h2_analysis']}/children",
-                      {"children":[para_block(
-                          "📊 분류별 비율 · 종목별 수익률 · 누적 총자산 곡선을 위 섹션에서 확인하세요.",
-                          color="gray")]}, "수익 분석 안내")
+        # 수익 분석 섹션 - heading_2는 자식 불가하므로 스킵
+        # (분류별 비율, 종목별 수익률, 누적곡선이 각 섹션에 이미 표시됨)
  
         # ── 지수기반 종목분석 테이블
         print("\n[8] 지수기반 종목분석 업데이트...")
@@ -991,4 +996,3 @@ def main():
  
 if __name__=="__main__":
     main()
- 
