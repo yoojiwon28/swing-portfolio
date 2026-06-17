@@ -645,7 +645,7 @@ def upsert_table(h2_block_id, col_count, has_header,
             if i < len(existing):
                 update_row(existing[i]["id"], cells)
             else:
-                append_row(table_id, cells)
+                print(f"  ⚠ {label}: 노션 테이블에 빈 행 추가 필요 ({i+1}번째)")
             time.sleep(0.15)
         print(f"  ✅ {label} 테이블 업데이트")
         return table_id
@@ -746,13 +746,14 @@ def update_date_para():
     print(f"  ✅ 업데이트 시간: {NOW_STR}")
  
 def update_table_block(table_id, data_rows):
-    existing = get_table_rows(table_id)[1:]
+    """기존 행을 PATCH로만 업데이트 (새 행 추가 불가 제한 대응)"""
+    existing = get_table_rows(table_id)[1:]  # 헤더 제외
     for i, cells in enumerate(data_rows):
         if i < len(existing):
             update_row(existing[i]["id"], cells)
+            time.sleep(0.15)
         else:
-            append_row(table_id, cells)
-        time.sleep(0.15)
+            print(f"  ⚠ 행 부족: 노션 테이블에 빈 행을 추가해주세요 ({i+1}번째)")
  
 def sync_child_page_trade(trades):
     """전체 매매일지 child_page 테이블 동기화"""
@@ -787,26 +788,23 @@ def sync_child_page_trade(trades):
             time.sleep(0.2)
         print(f"  ✅ 전체 매매일지 테이블 신규 생성 ({len(data_rows)}건)")
     else:
-        update_table_block(table_id, data_rows)
+        # 기존 행 PATCH 업데이트
+        existing = get_table_rows(table_id)[1:]
+        for i, cells in enumerate(data_rows):
+            if i < len(existing):
+                update_row(existing[i]["id"], cells)
+                time.sleep(0.15)
+            else:
+                print(f"  ⚠ 매매일지 행 부족: 노션에 빈 행 추가 필요")
         print(f"  ✅ 전체 매매일지 테이블 업데이트 ({len(data_rows)}건)")
  
 def update_index_table(judgements):
-    """지수기반 종목분석 테이블: 기존 데이터 행 삭제 후 재작성"""
+    """지수기반 종목분석 테이블: PATCH로 기존 행 업데이트"""
     table_id = BLK["table_index"]
     try:
         rows = get_table_rows(table_id)
-        # 기존 데이터 행 삭제 (헤더 제외)
-        for row in rows[1:]:
-            try:
-                requests.delete(
-                    f"https://api.notion.com/v1/blocks/{row['id']}",
-                    headers=HEADERS)
-                time.sleep(0.1)
-            except Exception:
-                pass
-        time.sleep(0.3)
-        # 데이터 행 새로 추가
-        for j in judgements:
+        existing = rows[1:]  # 헤더 제외
+        for i, j in enumerate(judgements):
             cells = [
                 j["name"], j["index"],
                 f"{j['stock_cum']:+.2f}%",
@@ -814,16 +812,18 @@ def update_index_table(judgements):
                 f"{j['alpha']:+.2f}%",
                 j["judgement"],
             ]
-            append_row(table_id, cells)
+            if i < len(existing):
+                update_row(existing[i]["id"], cells)
+            else:
+                print(f"  ⚠ {j['name']}: 노션 테이블에 빈 행 추가 필요")
             time.sleep(0.15)
-        print(f"  ✅ 지수기반 종목분석 테이블 업데이트 ({len(judgements)}종목)")
+        print(f"  ✅ 지수기반 종목분석 업데이트 ({len(judgements)}종목)")
     except Exception as e:
         print(f"  ⚠ 지수기반 종목분석 업데이트 실패: {e}")
  
 def update_tracker_table(holdings):
-    """보유기간 트래커 테이블 업데이트 (테이블 ID 직접 사용)"""
+    """보유기간 트래커 테이블: PATCH로 기존 행 업데이트"""
     table_id = BLK["table_tracker"]
-    headers  = ["종목명","티커","분류","최초매수일","보유일수","매입가","현재가","수익률"]
     def fmt(d):
         d = str(d)
         return f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else d
@@ -838,17 +838,12 @@ def update_tracker_table(holdings):
     ]
     try:
         rows = get_table_rows(table_id)
-        existing = rows[1:] if len(rows) > 1 else []
-        # 헤더가 없으면 추가
-        if not rows:
-            npost(f"blocks/{table_id}/children",
-                  {"children": [trow(headers)]})
-            time.sleep(0.2)
+        existing = rows[1:] if rows else []
         for i, cells in enumerate(data_rows):
             if i < len(existing):
                 update_row(existing[i]["id"], cells)
             else:
-                append_row(table_id, cells)
+                print(f"  ⚠ {holdings[i]['name']}: 노션 테이블에 빈 행 추가 필요")
             time.sleep(0.15)
         print(f"  ✅ 보유기간 트래커 업데이트 ({len(data_rows)}종목)")
     except Exception as e:
@@ -958,21 +953,18 @@ def main():
             ]
             holdings_rows.append(row)
  
-        # 기존 데이터 행 삭제 후 재작성
+        # 보유주식 테이블: 기존 행 PATCH로 업데이트
         all_rows = get_table_rows(BLK["table_holdings"])
-        for row in all_rows[1:]:
-            try:
-                requests.delete(
-                    f"https://api.notion.com/v1/blocks/{row['id']}",
-                    headers=HEADERS)
-                time.sleep(0.1)
-            except Exception:
-                pass
-        time.sleep(0.3)
-        for cells in holdings_rows:
-            append_row(BLK["table_holdings"], cells)
-            time.sleep(0.2)
-        print(f"  ✅ 보유주식 테이블 업데이트 ({len(holdings)}종목)")
+        existing = all_rows[1:]  # 헤더 제외
+        updated = 0
+        for i, cells in enumerate(holdings_rows):
+            if i < len(existing):
+                update_row(existing[i]["id"], cells)
+                updated += 1
+                time.sleep(0.15)
+            else:
+                print(f"  ⚠ {holdings[i]['name']}: 노션 테이블에 빈 행 추가 필요")
+        print(f"  ✅ 보유주식 테이블 업데이트 ({updated}/{len(holdings)}종목)")
  
         # 최근 매매일지 테이블
         if trades:
